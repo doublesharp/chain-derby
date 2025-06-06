@@ -144,7 +144,7 @@ export function FundingPhase() {
           </DropdownMenu>
 
           {/* Transaction Count Selector */}
-          {/* <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2">
             <span className="text-sm text-muted-foreground">Transactions:</span>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -168,12 +168,18 @@ export function FundingPhase() {
                 <DropdownMenuItem onClick={() => handleTxCountChange(10)}>
                   10 transactions
                 </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => handleTxCountChange(20)}>
-                  20 transactions
+                <DropdownMenuItem onClick={() => handleTxCountChange(25)}>
+                  25 transactions
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => handleTxCountChange(50)}>
+                  50 transactions
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => handleTxCountChange(100)}>
+                  100 transactions
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
-          </div> */}
+          </div>
 
           {/* Refresh Button */}
           <Button

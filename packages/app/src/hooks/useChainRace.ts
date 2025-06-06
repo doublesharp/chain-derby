@@ -54,7 +54,7 @@ export interface RaceResult {
   totalLatency?: number; // Total latency of all transactions combined
 }
 
-export type TransactionCount = 1 | 5 | 10 | 20;
+export type TransactionCount = 1 | 5 | 10 | 25 | 50 | 100;
 
 export interface RaceSessionPayload {
   title: string;
@@ -127,16 +127,6 @@ export function useChainRace() {
   const [isLoadingBalances, setIsLoadingBalances] = useState(false);
   const [transactionCount, setTransactionCount] = useState<TransactionCount>(
     () => {
-      // Load saved transaction count from localStorage if available
-      // if (typeof window !== 'undefined') {
-      //   const savedCount = localStorage.getItem(LOCAL_STORAGE_TX_COUNT);
-      //   if (savedCount) {
-      //     const count = parseInt(savedCount, 10) as TransactionCount;
-      //     if ([1, 5, 10, 20].includes(count)) {
-      //       return count;
-      //     }
-      //   }
-      // }
       return 10;
     }
   );
@@ -758,14 +748,11 @@ export function useChainRace() {
         );
 
         if (isEvmChain(chain)) {
-          // EVM chain transaction processing
-          const publicClient =
-            chain.id !== 11155931
-              ? createPublicClient({
-                  chain,
-                  transport: http(),
-                })
-              : null;
+          // EVM chain transaction processing - create publicClient for ALL chains including RISE
+          const publicClient = createPublicClient({
+            chain,
+            transport: http(),
+          });
 
           // Get pre-fetched chain data including pre-signed transactions
           const fallbackGasPrice = BigInt(
@@ -787,357 +774,7 @@ export function useChainRace() {
           };
 
           if (chain.id === 11155931) {
-            // For RISE testnet, use the sync client and send all transactions in parallel
-            const RISESyncClient = createSyncPublicClient({
-              chain,
-              transport: syncTransport(chain.rpcUrls.default.http[0]),
-            });
-
-            // Send ALL RISE transactions in parallel
-            const riseTransactionPromises = Array.from(
-              { length: transactionCount },
-              async (_, txIndex) => {
-                try {
-                  const txStartTime = Date.now();
-                  const signedTransaction =
-                    currentChainData.signedTransactions?.[txIndex];
-
-                  if (
-                    !signedTransaction ||
-                    typeof signedTransaction !== "string"
-                  ) {
-                    throw new Error(
-                      `Invalid transaction format for RISE tx #${txIndex}`
-                    );
-                  }
-
-                  const receipt = await RISESyncClient.sendRawTransactionSync(
-                    signedTransaction as `0x${string}`
-                  );
-
-                  if (!receipt || !receipt.transactionHash) {
-                    throw new Error(
-                      `RISE sync transaction sent but no receipt returned for tx #${txIndex}`
-                    );
-                  }
-
-                  const txEndTime = Date.now();
-                  const txLatency = txEndTime - txStartTime;
-
-                  return {
-                    txIndex,
-                    txHash: receipt.transactionHash,
-                    txLatency,
-                    txEndTime,
-                    success: true,
-                  };
-                } catch (error) {
-                  console.error(`RISE tx #${txIndex} error:`, error);
-                  return {
-                    txIndex,
-                    txLatency: 0,
-                    txEndTime: Date.now(),
-                    success: false,
-                    error,
-                  };
-                }
-              }
-            );
-
-            // Wait for all RISE transactions to complete
-            const riseResults = await Promise.allSettled(
-              riseTransactionPromises
-            );
-
-            let latestEndTime = globalRaceStartTime;
-            const confirmedLatencies: number[] = [];
-            let lastTxHash: Hex | undefined;
-
-            // Process all RISE results
-            riseResults.forEach((result) => {
-              if (result.status === "fulfilled" && result.value.success) {
-                const { txLatency, txEndTime, txHash } = result.value;
-                confirmedLatencies.push(txLatency);
-                latestEndTime = Math.max(latestEndTime, txEndTime);
-                lastTxHash = txHash;
-              }
-            });
-
-            // Update results once with all RISE transactions
-            if (confirmedLatencies.length > 0) {
-              setResults((prev) => {
-                const updatedResults = prev.map((r) => {
-                  if (r.chainId === chainId) {
-                    const newLatencies = [
-                      ...r.txLatencies,
-                      ...confirmedLatencies,
-                    ];
-                    const txCompleted =
-                      r.txCompleted + confirmedLatencies.length;
-                    const allTxCompleted = txCompleted >= transactionCount;
-
-                    const totalLatency = allTxCompleted
-                      ? latestEndTime - globalRaceStartTime
-                      : undefined;
-
-                    const averageLatency =
-                      newLatencies.length > 0
-                        ? Math.round(
-                            newLatencies.reduce((sum, val) => sum + val, 0) /
-                              newLatencies.length
-                          )
-                        : undefined;
-
-                    const newStatus:
-                      | "pending"
-                      | "racing"
-                      | "success"
-                      | "error" = allTxCompleted ? "success" : "racing";
-
-                    return {
-                      ...r,
-                      txHash: lastTxHash,
-                      txCompleted,
-                      status: newStatus,
-                      txLatencies: newLatencies,
-                      averageLatency,
-                      totalLatency,
-                    };
-                  }
-                  return r;
-                });
-
-                // Update rankings for finished chains
-                const finishedResults = updatedResults
-                  .filter((r) => r.status === "success")
-                  .sort(
-                    (a, b) =>
-                      (a.averageLatency || Infinity) -
-                      (b.averageLatency || Infinity)
-                  );
-
-                finishedResults.forEach((result, idx) => {
-                  const position = idx + 1;
-                  updatedResults.forEach((r, i) => {
-                    if (r.chainId === result.chainId) {
-                      updatedResults[i] = { ...r, position };
-                    }
-                  });
-                });
-
-                return updatedResults;
-              });
-            }
-          } else if (chain.id === 6342) {
-            // For MegaETH testnet, send all transactions in parallel
-            const megaethTransactionPromises = Array.from(
-              { length: transactionCount },
-              async (_, txIndex) => {
-                try {
-                  const txStartTime = Date.now();
-                  const signedTransaction =
-                    currentChainData.signedTransactions?.[txIndex];
-
-                  if (
-                    !signedTransaction ||
-                    typeof signedTransaction !== "string"
-                  ) {
-                    throw new Error(
-                      `Invalid transaction format for MegaETH tx #${txIndex}`
-                    );
-                  }
-
-                  if (!signedTransaction.startsWith("0x")) {
-                    throw new Error(
-                      `Invalid transaction format for MegaETH tx #${txIndex}: ${typeof signedTransaction}`
-                    );
-                  }
-
-                  const receipt = (await publicClient!.request({
-                    // @ts-expect-error - MegaETH custom method not in standard types
-                    method: "realtime_sendRawTransaction",
-                    params: [signedTransaction as `0x${string}`],
-                  })) as TransactionReceipt | null;
-
-                  if (!receipt) {
-                    throw new Error(
-                      `MegaETH transaction sent but no hash returned for tx #${txIndex}`
-                    );
-                  }
-
-                  const txEndTime = Date.now();
-                  const txLatency = txEndTime - txStartTime;
-
-                  return {
-                    txIndex,
-                    txHash: receipt.transactionHash as Hex,
-                    txLatency,
-                    txEndTime,
-                    success: true,
-                  };
-                } catch (error) {
-                  console.error(`MegaETH tx #${txIndex} error:`, error);
-                  return {
-                    txIndex,
-                    txLatency: 0,
-                    txEndTime: Date.now(),
-                    success: false,
-                    error,
-                  };
-                }
-              }
-            );
-
-            // Wait for all MegaETH transactions to complete
-            const megaethResults = await Promise.allSettled(
-              megaethTransactionPromises
-            );
-
-            let latestEndTime = globalRaceStartTime;
-            const confirmedLatencies: number[] = [];
-            let lastTxHash: Hex | undefined;
-
-            // Process all MegaETH results
-            megaethResults.forEach((result) => {
-              if (result.status === "fulfilled" && result.value.success) {
-                const { txLatency, txEndTime, txHash } = result.value;
-                confirmedLatencies.push(txLatency);
-                latestEndTime = Math.max(latestEndTime, txEndTime);
-                lastTxHash = txHash;
-              }
-            });
-
-            // Update results once with all MegaETH transactions
-            if (confirmedLatencies.length > 0) {
-              setResults((prev) => {
-                const updatedResults = prev.map((r) => {
-                  if (r.chainId === chainId) {
-                    const newLatencies = [
-                      ...r.txLatencies,
-                      ...confirmedLatencies,
-                    ];
-                    const txCompleted =
-                      r.txCompleted + confirmedLatencies.length;
-                    const allTxCompleted = txCompleted >= transactionCount;
-
-                    const totalLatency = allTxCompleted
-                      ? latestEndTime - globalRaceStartTime
-                      : undefined;
-
-                    const averageLatency =
-                      newLatencies.length > 0
-                        ? Math.round(
-                            newLatencies.reduce((sum, val) => sum + val, 0) /
-                              newLatencies.length
-                          )
-                        : undefined;
-
-                    const newStatus:
-                      | "pending"
-                      | "racing"
-                      | "success"
-                      | "error" = allTxCompleted ? "success" : "racing";
-
-                    return {
-                      ...r,
-                      txHash: lastTxHash,
-                      txCompleted,
-                      status: newStatus,
-                      txLatencies: newLatencies,
-                      averageLatency,
-                      totalLatency,
-                    };
-                  }
-                  return r;
-                });
-
-                // Update rankings for finished chains
-                const finishedResults = updatedResults
-                  .filter((r) => r.status === "success")
-                  .sort(
-                    (a, b) =>
-                      (a.averageLatency || Infinity) -
-                      (b.averageLatency || Infinity)
-                  );
-
-                finishedResults.forEach((result, idx) => {
-                  const position = idx + 1;
-                  updatedResults.forEach((r, i) => {
-                    if (r.chainId === result.chainId) {
-                      updatedResults[i] = { ...r, position };
-                    }
-                  });
-                });
-
-                return updatedResults;
-              });
-            }
-          } else {
-            // For other chains, send all transactions in parallel, then wait for confirmations in parallel
-
-            // Phase 1: Send ALL transactions in parallel
-            const sendTransactionPromises = Array.from(
-              { length: transactionCount },
-              async (_, txIndex) => {
-                try {
-                  const txStartTime = Date.now();
-                  const signedTransaction =
-                    currentChainData.signedTransactions?.[txIndex];
-
-                  if (!signedTransaction) {
-                    throw new Error(
-                      `No transaction to send for ${chain.name} tx #${txIndex}`
-                    );
-                  }
-
-                  if (
-                    typeof signedTransaction !== "string" ||
-                    !signedTransaction.startsWith("0x")
-                  ) {
-                    throw new Error(
-                      `Invalid transaction format for ${
-                        chain.name
-                      } tx #${txIndex}: ${typeof signedTransaction}`
-                    );
-                  }
-
-                  // Send the raw transaction
-                  const txHash = await publicClient!.sendRawTransaction({
-                    serializedTransaction: signedTransaction as `0x${string}`,
-                  });
-
-                  if (!txHash) {
-                    throw new Error(
-                      `Transaction sent but no hash returned for ${chain.name} tx #${txIndex}`
-                    );
-                  }
-
-                  return {
-                    txIndex,
-                    txHash,
-                    txStartTime,
-                    success: true,
-                  };
-                } catch (error) {
-                  console.error(
-                    `Send error for ${chain.name} tx #${txIndex}:`,
-                    error
-                  );
-                  return {
-                    txIndex,
-                    txHash: null,
-                    txStartTime: Date.now(),
-                    success: false,
-                    error,
-                  };
-                }
-              }
-            );
-
-            // Wait for all sends to complete
-            const sendResults = await Promise.allSettled(
-              sendTransactionPromises
-            );
+            // For RISE testnet, choose client based on waitForReceipts setting
 
             const txHashesWithTiming: Array<{
               hash: Hex;
@@ -1145,101 +782,210 @@ export function useChainRace() {
               txIndex: number;
             }> = [];
 
-            // Collect successful sends
-            sendResults.forEach((result) => {
-              if (
-                result.status === "fulfilled" &&
-                result.value.success &&
-                result.value.txHash
-              ) {
-                txHashesWithTiming.push({
-                  hash: result.value.txHash,
-                  startTime: result.value.txStartTime,
-                  txIndex: result.value.txIndex,
-                });
-              }
+            // Use sync client when we need receipts (returns receipts directly)
+            const RISESyncClient = createSyncPublicClient({
+              chain,
+              transport: syncTransport(chain.rpcUrls.default.http[0]),
             });
 
-            // Update result with first transaction hash (but not yet confirmed)
-            if (txHashesWithTiming.length > 0) {
-              setResults((prev) =>
-                prev.map((r) =>
-                  r.chainId === chainId
-                    ? { ...r, txHash: txHashesWithTiming[0].hash }
-                    : r
-                )
-              );
-            }
+            // Send transactions SEQUENTIALLY using sync client
+            for (let txIndex = 0; txIndex < transactionCount; txIndex++) {
+              try {
+                const txStartTime = Date.now();
+                const signedTransaction =
+                  currentChainData.signedTransactions?.[txIndex];
 
-            // Phase 2: Wait for ALL confirmations in parallel
-            if (txHashesWithTiming.length > 0) {
-              const confirmationPromises = txHashesWithTiming.map(
-                async ({ hash, startTime, txIndex }) => {
-                  try {
-                    if (waitForReceipts) {
-                      // Wait for actual transaction receipt confirmation
-                      await publicClient!.waitForTransactionReceipt({
-                        pollingInterval: 33,
-                        retryDelay: 0,
-                        hash,
-                        timeout: 60_000,
-                      });
-                    } else {
-                      // Skip waiting for receipts - just use current time as "confirmation"
-                      // This makes races much faster but less accurate
+                if (
+                  !signedTransaction ||
+                  typeof signedTransaction !== "string"
+                ) {
+                  throw new Error(
+                    `Invalid transaction format for RISE tx #${txIndex}`
+                  );
+                }
+
+                // sendRawTransactionSync returns receipt directly - no polling needed
+                const receipt = await RISESyncClient.sendRawTransactionSync(
+                  signedTransaction as `0x${string}`
+                );
+
+                if (!receipt || !receipt.transactionHash) {
+                  throw new Error(
+                    `RISE sync transaction sent but no receipt returned for tx #${txIndex}`
+                  );
+                }
+
+                const txEndTime = Date.now();
+                const txLatency = txEndTime - txStartTime;
+
+                // Update results immediately for each confirmed transaction
+                setResults((prev) => {
+                  const updatedResults = prev.map((r) => {
+                    if (r.chainId === chainId) {
+                      const newLatencies = [...r.txLatencies, txLatency];
+                      const txCompleted = r.txCompleted + 1;
+                      const allTxCompleted = txCompleted >= transactionCount;
+
+                      const totalLatency = allTxCompleted
+                        ? txEndTime - globalRaceStartTime
+                        : undefined;
+
+                      const averageLatency =
+                        newLatencies.length > 0
+                          ? Math.round(
+                              newLatencies.reduce((sum, val) => sum + val, 0) /
+                                newLatencies.length
+                            )
+                          : undefined;
+
+                      const newStatus:
+                        | "pending"
+                        | "racing"
+                        | "success"
+                        | "error" = allTxCompleted ? "success" : "racing";
+
+                      return {
+                        ...r,
+                        txHash: receipt.transactionHash,
+                        txCompleted,
+                        status: newStatus,
+                        txLatencies: newLatencies,
+                        averageLatency,
+                        totalLatency,
+                      };
                     }
+                    return r;
+                  });
 
-                    const txEndTime = Date.now();
-                    const txLatency = txEndTime - startTime;
+                  // Update rankings for finished chains based on total time
+                  if (
+                    updatedResults.find((r) => r.chainId === chainId)
+                      ?.status === "success"
+                  ) {
+                    const finishedResults = updatedResults
+                      .filter((r) => r.status === "success")
+                      .sort(
+                        (a, b) =>
+                          (a.totalLatency || Infinity) -
+                          (b.totalLatency || Infinity)
+                      );
 
-                    // Update results immediately for each confirmed transaction
-                    setResults((prev) => {
-                      const updatedResults = prev.map((r) => {
-                        if (r.chainId === chainId) {
-                          const newLatencies = [...r.txLatencies, txLatency];
-                          const txCompleted = r.txCompleted + 1;
-                          const allTxCompleted =
-                            txCompleted >= transactionCount;
+                    finishedResults.forEach((result, idx) => {
+                      const position = idx + 1;
+                      updatedResults.forEach((r, i) => {
+                        if (r.chainId === result.chainId) {
+                          updatedResults[i] = { ...r, position };
+                        }
+                      });
+                    });
+                  }
 
-                          const totalLatency = allTxCompleted
-                            ? txEndTime - globalRaceStartTime
+                  return updatedResults;
+                });
+
+                // Very small delay between transactions (1ms for RISE)
+                if (txIndex < transactionCount - 1) {
+                  await new Promise((resolve) => setTimeout(resolve, 1));
+                }
+              } catch (error) {
+                console.error(`RISE sync tx #${txIndex} error:`, error);
+                // Continue with next transaction even if one fails
+              }
+            }
+          } else if (chain.id === 6342) {
+            // For MegaETH testnet, send transactions SEQUENTIALLY, then optionally wait for confirmations
+
+            const txHashesWithTiming: Array<{
+              hash: Hex;
+              startTime: number;
+              txIndex: number;
+            }> = [];
+
+            // Phase 1: Send transactions SEQUENTIALLY using MegaETH's realtime method or regular method
+            for (let txIndex = 0; txIndex < transactionCount; txIndex++) {
+              try {
+                const txStartTime = Date.now();
+                const signedTransaction =
+                  currentChainData.signedTransactions?.[txIndex];
+
+                if (
+                  !signedTransaction ||
+                  typeof signedTransaction !== "string"
+                ) {
+                  throw new Error(
+                    `Invalid transaction format for MegaETH tx #${txIndex}`
+                  );
+                }
+
+                if (waitForReceipts) {
+                  // Use realtime_sendRawTransaction which returns receipt directly
+                  const receipt = (await publicClient.request({
+                    // @ts-expect-error - MegaETH custom method not in standard types
+                    method: "realtime_sendRawTransaction",
+                    params: [signedTransaction as `0x${string}`],
+                  })) as TransactionReceipt | null;
+
+                  if (!receipt || !receipt.transactionHash) {
+                    throw new Error(
+                      `MegaETH realtime transaction sent but no receipt returned for tx #${txIndex}`
+                    );
+                  }
+
+                  const txEndTime = Date.now();
+                  const txLatency = txEndTime - txStartTime;
+
+                  // Update results immediately for each confirmed transaction
+                  setResults((prev) => {
+                    const updatedResults = prev.map((r) => {
+                      if (r.chainId === chainId) {
+                        const newLatencies = [...r.txLatencies, txLatency];
+                        const txCompleted = r.txCompleted + 1;
+                        const allTxCompleted = txCompleted >= transactionCount;
+
+                        const totalLatency = allTxCompleted
+                          ? txEndTime - globalRaceStartTime
+                          : undefined;
+
+                        const averageLatency =
+                          newLatencies.length > 0
+                            ? Math.round(
+                                newLatencies.reduce(
+                                  (sum, val) => sum + val,
+                                  0
+                                ) / newLatencies.length
+                              )
                             : undefined;
 
-                          const averageLatency =
-                            newLatencies.length > 0
-                              ? Math.round(
-                                  newLatencies.reduce(
-                                    (sum, val) => sum + val,
-                                    0
-                                  ) / newLatencies.length
-                                )
-                              : undefined;
+                        const newStatus:
+                          | "pending"
+                          | "racing"
+                          | "success"
+                          | "error" = allTxCompleted ? "success" : "racing";
 
-                          const newStatus:
-                            | "pending"
-                            | "racing"
-                            | "success"
-                            | "error" = allTxCompleted ? "success" : "racing";
+                        return {
+                          ...r,
+                          txHash: receipt.transactionHash as Hex,
+                          txCompleted,
+                          status: newStatus,
+                          txLatencies: newLatencies,
+                          averageLatency,
+                          totalLatency,
+                        };
+                      }
+                      return r;
+                    });
 
-                          return {
-                            ...r,
-                            txCompleted,
-                            status: newStatus,
-                            txLatencies: newLatencies,
-                            averageLatency,
-                            totalLatency,
-                          };
-                        }
-                        return r;
-                      });
-
-                      // Update rankings when chains complete
+                    // Update rankings for finished chains based on total time
+                    if (
+                      updatedResults.find((r) => r.chainId === chainId)
+                        ?.status === "success"
+                    ) {
                       const finishedResults = updatedResults
                         .filter((r) => r.status === "success")
                         .sort(
                           (a, b) =>
-                            (a.averageLatency || Infinity) -
-                            (b.averageLatency || Infinity)
+                            (a.totalLatency || Infinity) -
+                            (b.totalLatency || Infinity)
                         );
 
                       finishedResults.forEach((result, idx) => {
@@ -1250,33 +996,361 @@ export function useChainRace() {
                           }
                         });
                       });
+                    }
 
-                      return updatedResults;
+                    return updatedResults;
+                  });
+                } else {
+                  // Use regular sendRawTransaction for fast mode
+                  const txHash = await publicClient.sendRawTransaction({
+                    serializedTransaction: signedTransaction as `0x${string}`,
+                  });
+
+                  if (!txHash) {
+                    throw new Error(
+                      `MegaETH transaction sent but no hash returned for tx #${txIndex}`
+                    );
+                  }
+
+                  const txEndTime = Date.now();
+                  const txLatency = txEndTime - txStartTime;
+
+                  // Fast mode: Update progress immediately after each transaction is sent
+                  setResults((prev) => {
+                    const updatedResults = prev.map((r) => {
+                      if (r.chainId === chainId) {
+                        const newLatencies = [...r.txLatencies, txLatency];
+                        const txCompleted = r.txCompleted + 1;
+                        const allTxCompleted = txCompleted >= transactionCount;
+
+                        const totalLatency = allTxCompleted
+                          ? txEndTime - globalRaceStartTime
+                          : undefined;
+
+                        const averageLatency =
+                          newLatencies.length > 0
+                            ? Math.round(
+                                newLatencies.reduce(
+                                  (sum, val) => sum + val,
+                                  0
+                                ) / newLatencies.length
+                              )
+                            : undefined;
+
+                        const newStatus:
+                          | "pending"
+                          | "racing"
+                          | "success"
+                          | "error" = allTxCompleted ? "success" : "racing";
+
+                        return {
+                          ...r,
+                          txHash,
+                          txCompleted,
+                          status: newStatus,
+                          txLatencies: newLatencies,
+                          averageLatency,
+                          totalLatency,
+                        };
+                      }
+                      return r;
                     });
 
-                    return { txIndex, txLatency, txEndTime, success: true };
-                  } catch (error) {
-                    console.error(
-                      `Confirmation error for ${chain.name} tx #${txIndex}:`,
-                      error
-                    );
-                    return {
-                      txIndex,
-                      txLatency: 0,
-                      txEndTime: Date.now(),
-                      success: false,
-                      error,
-                    };
-                  }
-                }
-              );
+                    // Update rankings when chains complete based on total time
+                    if (
+                      updatedResults.find((r) => r.chainId === chainId)
+                        ?.status === "success"
+                    ) {
+                      const finishedResults = updatedResults
+                        .filter((r) => r.status === "success")
+                        .sort(
+                          (a, b) =>
+                            (a.totalLatency || Infinity) -
+                            (b.totalLatency || Infinity)
+                        );
 
-              // Wait for all confirmations to complete (but results are already being updated above)
-              await Promise.allSettled(confirmationPromises);
+                      finishedResults.forEach((result, idx) => {
+                        const position = idx + 1;
+                        updatedResults.forEach((r, i) => {
+                          if (r.chainId === result.chainId) {
+                            updatedResults[i] = { ...r, position };
+                          }
+                        });
+                      });
+                    }
+
+                    return updatedResults;
+                  });
+                }
+
+                // Very small delay between transactions (1ms for MegaETH)
+                if (txIndex < transactionCount - 1) {
+                  await new Promise((resolve) => setTimeout(resolve, 1));
+                }
+              } catch (error) {
+                console.error(`MegaETH tx #${txIndex} error:`, error);
+                // Continue with next transaction even if one fails
+              }
+            }
+          } else {
+            // For other chains, send transactions SEQUENTIALLY with async receipt confirmation
+
+            // Phase 1: Send transactions SEQUENTIALLY with immediate async confirmation
+            for (let txIndex = 0; txIndex < transactionCount; txIndex++) {
+              try {
+                const txStartTime = Date.now();
+                const signedTransaction =
+                  currentChainData.signedTransactions?.[txIndex];
+
+                if (!signedTransaction) {
+                  throw new Error(
+                    `No transaction to send for ${chain.name} tx #${txIndex}`
+                  );
+                }
+
+                if (
+                  typeof signedTransaction !== "string" ||
+                  !signedTransaction.startsWith("0x")
+                ) {
+                  throw new Error(
+                    `Invalid transaction format for ${
+                      chain.name
+                    } tx #${txIndex}: ${typeof signedTransaction}`
+                  );
+                }
+
+                // Send the raw transaction (sequential)
+                const txHash = await publicClient.sendRawTransaction({
+                  serializedTransaction: signedTransaction as `0x${string}`,
+                });
+
+                if (!txHash) {
+                  throw new Error(
+                    `Transaction sent but no hash returned for ${chain.name} tx #${txIndex}`
+                  );
+                }
+
+                const txEndTime = Date.now();
+                const txLatency = txEndTime - txStartTime;
+
+                if (waitForReceipts) {
+                  // Start async receipt confirmation immediately but don't block
+                  const confirmationPromise = (async () => {
+                    try {
+                      await publicClient.waitForTransactionReceipt({
+                        pollingInterval: 10, // Very aggressive polling for fast chains
+                        retryDelay: 0,
+                        hash: txHash,
+                        timeout: 60_000,
+                      });
+
+                      const confirmationEndTime = Date.now();
+                      const confirmationLatency =
+                        confirmationEndTime - txStartTime;
+
+                      // Update results when confirmation completes
+                      setResults((prev) => {
+                        const updatedResults = prev.map((r) => {
+                          if (r.chainId === chainId) {
+                            // Find and update the latency for this specific transaction
+                            const newLatencies = [...r.txLatencies];
+                            // Replace the submission latency with confirmation latency
+                            newLatencies[txIndex] = confirmationLatency;
+
+                            const confirmedTxCount = newLatencies.filter(
+                              (lat) => lat > 0
+                            ).length;
+                            const allTxConfirmed =
+                              confirmedTxCount >= transactionCount;
+
+                            const totalLatency = allTxConfirmed
+                              ? confirmationEndTime - globalRaceStartTime
+                              : undefined;
+
+                            const averageLatency =
+                              confirmedTxCount > 0
+                                ? Math.round(
+                                    newLatencies.reduce(
+                                      (sum, val) => sum + val,
+                                      0
+                                    ) / confirmedTxCount
+                                  )
+                                : undefined;
+
+                            const newStatus:
+                              | "pending"
+                              | "racing"
+                              | "success"
+                              | "error" = allTxConfirmed ? "success" : "racing";
+
+                            return {
+                              ...r,
+                              status: newStatus,
+                              txLatencies: newLatencies,
+                              averageLatency,
+                              totalLatency,
+                            };
+                          }
+                          return r;
+                        });
+
+                        // Update rankings when chains complete based on total time
+                        if (
+                          updatedResults.find((r) => r.chainId === chainId)
+                            ?.status === "success"
+                        ) {
+                          const finishedResults = updatedResults
+                            .filter((r) => r.status === "success")
+                            .sort(
+                              (a, b) =>
+                                (a.totalLatency || Infinity) -
+                                (b.totalLatency || Infinity)
+                            );
+
+                          finishedResults.forEach((result, idx) => {
+                            const position = idx + 1;
+                            updatedResults.forEach((r, i) => {
+                              if (r.chainId === result.chainId) {
+                                updatedResults[i] = { ...r, position };
+                              }
+                            });
+                          });
+                        }
+
+                        return updatedResults;
+                      });
+
+                      return { txIndex, success: true };
+                    } catch (error) {
+                      console.error(
+                        `Confirmation error for ${chain.name} tx #${txIndex}:`,
+                        error
+                      );
+                      return {
+                        txIndex,
+                        success: false,
+                        error,
+                      };
+                    }
+                  })();
+
+                  // Don't await the confirmation - let it run async
+                  // Store the promise if we need to clean up later
+
+                  // Update pony progress immediately after submission
+                  setResults((prev) => {
+                    const updatedResults = prev.map((r) => {
+                      if (r.chainId === chainId) {
+                        // Initialize latency array with submission latencies
+                        const newLatencies = [...r.txLatencies];
+                        newLatencies[txIndex] = txLatency; // Temporary submission latency
+
+                        const txCompleted = r.txCompleted + 1;
+
+                        // Don't mark as complete until confirmations are done
+                        const newStatus:
+                          | "pending"
+                          | "racing"
+                          | "success"
+                          | "error" = "racing";
+
+                        return {
+                          ...r,
+                          txHash,
+                          txCompleted,
+                          status: newStatus,
+                          txLatencies: newLatencies,
+                        };
+                      }
+                      return r;
+                    });
+
+                    return updatedResults;
+                  });
+                } else {
+                  // Fast mode: Update progress immediately after each transaction is sent
+                  setResults((prev) => {
+                    const updatedResults = prev.map((r) => {
+                      if (r.chainId === chainId) {
+                        const newLatencies = [...r.txLatencies, txLatency];
+                        const txCompleted = r.txCompleted + 1;
+                        const allTxCompleted = txCompleted >= transactionCount;
+
+                        const totalLatency = allTxCompleted
+                          ? txEndTime - globalRaceStartTime
+                          : undefined;
+
+                        const averageLatency =
+                          newLatencies.length > 0
+                            ? Math.round(
+                                newLatencies.reduce(
+                                  (sum, val) => sum + val,
+                                  0
+                                ) / newLatencies.length
+                              )
+                            : undefined;
+
+                        const newStatus:
+                          | "pending"
+                          | "racing"
+                          | "success"
+                          | "error" = allTxCompleted ? "success" : "racing";
+
+                        return {
+                          ...r,
+                          txHash,
+                          txCompleted,
+                          status: newStatus,
+                          txLatencies: newLatencies,
+                          averageLatency,
+                          totalLatency,
+                        };
+                      }
+                      return r;
+                    });
+
+                    // Update rankings when chains complete based on total time
+                    if (
+                      updatedResults.find((r) => r.chainId === chainId)
+                        ?.status === "success"
+                    ) {
+                      const finishedResults = updatedResults
+                        .filter((r) => r.status === "success")
+                        .sort(
+                          (a, b) =>
+                            (a.totalLatency || Infinity) -
+                            (b.totalLatency || Infinity)
+                        );
+
+                      finishedResults.forEach((result, idx) => {
+                        const position = idx + 1;
+                        updatedResults.forEach((r, i) => {
+                          if (r.chainId === result.chainId) {
+                            updatedResults[i] = { ...r, position };
+                          }
+                        });
+                      });
+                    }
+
+                    return updatedResults;
+                  });
+                }
+
+                // Very small delay between transactions for fast chains (1ms)
+                if (txIndex < transactionCount - 1) {
+                  await new Promise((resolve) => setTimeout(resolve, 1));
+                }
+              } catch (error) {
+                console.error(
+                  `Send error for ${chain.name} tx #${txIndex}:`,
+                  error
+                );
+                // Continue with next transaction even if one fails
+              }
             }
           }
         } else if (isSolanaChain(chain)) {
-          // Solana chain transaction processing - send ALL transactions in parallel
+          // Send Solana transactions SEQUENTIALLY with individual updates
           const currentChainData = chainData.get(chainId);
 
           if (!currentChainData || !currentChainData.connection) {
@@ -1284,134 +1358,105 @@ export function useChainRace() {
             return;
           }
 
-          // Send ALL Solana transactions in parallel
-          const solanaTransactionPromises = Array.from(
-            { length: transactionCount },
-            async (_, txIndex) => {
-              try {
-                const txStartTime = Date.now();
+          for (let txIndex = 0; txIndex < transactionCount; txIndex++) {
+            try {
+              const txStartTime = Date.now();
 
-                // Create fresh transaction with unique nonce (using txIndex + timestamp for uniqueness)
-                const transaction = new Transaction().add(
-                  SystemProgram.transfer({
-                    fromPubkey: solanaKeypair.publicKey,
-                    toPubkey: solanaKeypair.publicKey,
-                    lamports: txIndex, // Use different amounts to make transactions unique
-                  })
-                );
+              // Create fresh transaction with unique nonce (using txIndex + timestamp for uniqueness)
+              const transaction = new Transaction().add(
+                SystemProgram.transfer({
+                  fromPubkey: solanaKeypair.publicKey,
+                  toPubkey: solanaKeypair.publicKey,
+                  lamports: txIndex, // Use different amounts to make transactions unique
+                })
+              );
 
-                const signature = await sendAndConfirmTransaction(
-                  currentChainData.connection!,
-                  transaction,
-                  [solanaKeypair],
-                  {
-                    commitment: chain.commitment,
-                    preflightCommitment: chain.commitment,
-                  }
-                );
+              const signature = await sendAndConfirmTransaction(
+                currentChainData.connection!,
+                transaction,
+                [solanaKeypair],
+                {
+                  commitment: chain.commitment,
+                  preflightCommitment: chain.commitment,
+                }
+              );
 
-                const txEndTime = Date.now();
-                const txLatency = txEndTime - txStartTime;
+              const txEndTime = Date.now();
+              const txLatency = txEndTime - txStartTime;
 
-                return {
-                  txIndex,
-                  signature,
-                  txLatency,
-                  txEndTime,
-                  success: true,
-                };
-              } catch (error) {
-                console.error(`Solana tx #${txIndex} error:`, error);
-                return {
-                  txIndex,
-                  txLatency: 0,
-                  txEndTime: Date.now(),
-                  success: false,
-                  error,
-                };
-              }
-            }
-          );
+              // Update results immediately for each Solana transaction
+              setResults((prev) => {
+                const updatedResults = prev.map((r) => {
+                  if (r.chainId === chainId) {
+                    const newLatencies = [...r.txLatencies, txLatency];
+                    const txCompleted = r.txCompleted + 1;
+                    const allTxCompleted = txCompleted >= transactionCount;
 
-          // Wait for all Solana transactions to complete
-          const solanaResults = await Promise.allSettled(
-            solanaTransactionPromises
-          );
-
-          let latestEndTime = globalRaceStartTime;
-          const confirmedLatencies: number[] = [];
-          let lastSignature: string | undefined;
-
-          // Process all Solana results
-          solanaResults.forEach((result) => {
-            if (result.status === "fulfilled" && result.value.success) {
-              const { txLatency, txEndTime, signature } = result.value;
-              confirmedLatencies.push(txLatency);
-              latestEndTime = Math.max(latestEndTime, txEndTime);
-              lastSignature = signature;
-            }
-          });
-
-          // Update results once with all Solana transactions
-          if (confirmedLatencies.length > 0) {
-            setResults((prev) => {
-              const updatedResults = prev.map((r) => {
-                if (r.chainId === chainId) {
-                  const newLatencies = [
-                    ...r.txLatencies,
-                    ...confirmedLatencies,
-                  ];
-                  const txCompleted = r.txCompleted + confirmedLatencies.length;
-                  const allTxCompleted = txCompleted >= transactionCount;
-
-                  const totalLatency = allTxCompleted
-                    ? latestEndTime - globalRaceStartTime
-                    : undefined;
-
-                  const averageLatency =
-                    newLatencies.length > 0
-                      ? Math.round(
-                          newLatencies.reduce((sum, val) => sum + val, 0) /
-                            newLatencies.length
-                        )
+                    const totalLatency = allTxCompleted
+                      ? txEndTime - globalRaceStartTime
                       : undefined;
 
-                  const newStatus: "pending" | "racing" | "success" | "error" =
-                    allTxCompleted ? "success" : "racing";
+                    const averageLatency =
+                      newLatencies.length > 0
+                        ? Math.round(
+                            newLatencies.reduce((sum, val) => sum + val, 0) /
+                              newLatencies.length
+                          )
+                        : undefined;
 
-                  return {
-                    ...r,
-                    signature: lastSignature,
-                    txCompleted,
-                    status: newStatus,
-                    txLatencies: newLatencies,
-                    averageLatency,
-                    totalLatency,
-                  };
-                }
-                return r;
-              });
+                    const newStatus:
+                      | "pending"
+                      | "racing"
+                      | "success"
+                      | "error" = allTxCompleted ? "success" : "racing";
 
-              // Update rankings when chains complete
-              const finishedResults = updatedResults
-                .filter((r) => r.status === "success")
-                .sort(
-                  (a, b) =>
-                    (a.averageLatency || Infinity) -
-                    (b.averageLatency || Infinity)
-                );
-
-              finishedResults.forEach((result, idx) => {
-                const position = idx + 1;
-                updatedResults.forEach((r, i) => {
-                  if (r.chainId === result.chainId) {
-                    updatedResults[i] = { ...r, position };
+                    return {
+                      ...r,
+                      signature,
+                      txCompleted,
+                      status: newStatus,
+                      txLatencies: newLatencies,
+                      averageLatency,
+                      totalLatency,
+                    };
                   }
+                  return r;
                 });
+
+                // Update rankings when chains complete based on total time
+                if (
+                  updatedResults.find((r) => r.chainId === chainId)?.status ===
+                  "success"
+                ) {
+                  const finishedResults = updatedResults
+                    .filter((r) => r.status === "success")
+                    .sort(
+                      (a, b) =>
+                        (a.totalLatency || Infinity) -
+                        (b.totalLatency || Infinity)
+                    );
+
+                  finishedResults.forEach((result, idx) => {
+                    const position = idx + 1;
+                    updatedResults.forEach((r, i) => {
+                      if (r.chainId === result.chainId) {
+                        updatedResults[i] = { ...r, position };
+                      }
+                    });
+                  });
+                }
+
+                return updatedResults;
               });
 
-              return updatedResults;
-            });
+              // Very small delay between transactions (1ms for Solana)
+              if (txIndex < transactionCount - 1) {
+                await new Promise((resolve) => setTimeout(resolve, 1));
+              }
+            } catch (error) {
+              console.error(`Solana tx #${txIndex} error:`, error);
+              // Continue with next transaction even if one fails
+            }
           }
         }
       } catch (error) {
